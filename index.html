@@ -1,0 +1,147 @@
+<h2>Introduction</h2>
+<p>Web push notifications allow websites to send timely, relevant information to users even when the user is not actively browsing that site. Similar to mobile app push notifications, web push lets a web app send messages that appear in the user’s device notification area. This capability can be used to re-engage users with updates, reminders, or special offers. Since being standardized in 2016 with the <a href="https://www.w3.org/TR/push-api/">Push API</a> and <a href="https://www.w3.org/TR/notifications/">Notifications API</a>, web push has become a key feature of progressive web apps, now supported by all modern browsers (Chrome, Firefox, Edge, and as of 2023, Safari).</p>
+
+<h2>How Web Push Notifications Work</h2>
+<p>Web push is powered by two closely related technologies: the Notifications API and the Push API. The <a href="https://developer.mozilla.org/en-US/docs/Web/API/Notifications_API">Notifications API</a> allows web pages to display system notifications to the user, while the <a href="https://developer.mozilla.org/en-US/docs/Web/API/Push_API">Push API</a> enables a server to send messages to a web application via a push service. Together with <a href="https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API">service workers</a>, these APIs enable background capabilities: your app’s service worker can subscribe to push messages and display notifications even when the web page is closed or inactive.</p>
+<p>At a high level, the process works as follows: First, the user agrees to receive notifications from your site. The browser then creates a <em>push subscription</em> for the user's device, which includes an endpoint URL on a browser-specific push service and cryptographic keys. Your server stores this subscription info. Later, when you want to notify the user, your server sends a message (typically via a web push library or the push service’s API) to the endpoint. The browser’s push service delivers the message to the appropriate service worker, which wakes up and handles the incoming <code>push</code> event – usually by displaying a notification via the Notifications API.</p>
+
+<blockquote><p><strong>Tip:</strong> Push subscriptions are unique URLs that allow your server to target a specific user’s browser. Keep subscription endpoints secure and secret, as anyone who has the endpoint can send push messages to your app. <a href="https://developer.mozilla.org/en-US/docs/Web/API/Push_API">[MDN]</a></p></blockquote>
+
+<h2>Implementing Web Push Notifications</h2>
+<p>Setting up web push notifications involves both client-side and server-side work. The client (in-browser) code handles registering a service worker, asking for user permission, and subscribing to push. The server-side code sends push messages to subscribed clients. Let’s break down the steps:</p>
+
+<h3>1. Register a Service Worker</h3>
+<p>A service worker is required for push to work, because it runs in the background to receive push events. You must register a service worker script from your web page using JavaScript:</p>
+<pre><code class="language-javascript">if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js')
+    .then(registration => {
+      console.log('Service Worker registered:', registration);
+    })
+    .catch(error => {
+      console.error('Service Worker registration failed:', error);
+    });
+}</code></pre>
+<p>This code checks that service workers are supported, then registers the <code>sw.js</code> script. Once registered, the service worker can intercept push events even when the page is not open. Note that service workers (and thus push) only work in secure contexts (<a href="https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts">HTTPS</a> or localhost).</p>
+
+<h3>2. Request Notification Permission</h3>
+<p>Before sending any notifications, you must get the user’s permission. The browser will prompt the user to Allow or Block notifications for your site. You trigger this by calling <code>Notification.requestPermission()</code> in response to a user action (e.g. a button click):</p>
+<pre><code class="language-javascript">const enableNotificationsButton = document.getElementById('enable-notifications');
+enableNotificationsButton.addEventListener('click', () => {
+  Notification.requestPermission().then(permission => {
+    if (permission === 'granted') {
+      console.log('Notification permission granted.');
+      // You could initiate push subscription here
+    } else {
+      console.log('Notification permission denied or dismissed.');
+    }
+  });
+});</code></pre>
+<p>It’s important to request permission at a moment when users understand why notifications are needed — for example, after they click an “Enable Notifications” button as shown above, rather than immediately on page load. If permission is granted, your web app can use both the Notifications API and Push API for this user.</p>
+<blockquote><p>“You should only request consent to display notifications in response to a user gesture (e.g., clicking a button). This is not only best practice — going forward browsers will explicitly disallow notification permission requests not triggered by a user gesture.” <a href="https://developer.mozilla.org/en-US/docs/Web/API/Notifications_API/Using_the_Notifications_API">[MDN]</a></p></blockquote>
+
+<h3>3. Subscribe the User to Push Service</h3>
+<p>Once permission is granted and the service worker is ready, the next step is to create a push subscription. This involves calling <code>PushManager.subscribe()</code> on the service worker registration. Each browser will coordinate with its push service (e.g., Firebase Cloud Messaging for Chrome, Mozilla’s Autopush for Firefox, Apple Push Service for Safari) to set up the subscription.</p>
+<pre><code class="language-javascript">async function subscribeUserToPush() {
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscribeOptions = {
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array('&lt;Your Public VAPID Key&gt;')
+    };
+    const pushSubscription = await registration.pushManager.subscribe(subscribeOptions);
+    console.log('Received PushSubscription:', JSON.stringify(pushSubscription));
+    // TODO: Send the subscription to your server to save it
+  } catch (error) {
+    console.error('Failed to subscribe the user: ', error);
+  }
+}</code></pre>
+<p>In the above code, <code>userVisibleOnly: true</code> is required by the standard to ensure that push messages will always result in a visible notification to the user. The <code>applicationServerKey</code> is a public key that your server provides (commonly a VAPID public key) to authenticate your push subscription with the push service. The result, <code>pushSubscription</code>, contains an endpoint URL (the address of the push service for this subscription) and cryptographic keys used to encrypt messages. At this point, the browser has effectively registered this user (via their service worker) with its push service.</p>
+
+<h3>4. Send the Subscription to Your Server</h3>
+<p>Now you need to save the new subscription on your server. This allows your server to later send push notifications to that client. Typically you would send the subscription to your backend with an AJAX call right after subscribing:</p>
+<pre><code class="language-javascript">await fetch('/subscribe', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(pushSubscription)
+});</code></pre>
+<p>On the server side, store this subscription object (which includes the endpoint and keys). Often you’ll associate it with a user ID or account in your database so you know whose device it is. It’s a good practice to also send some identifier along with the subscription so your server can manage subscriptions (for example, if a user has multiple devices, each will have its own subscription).</p>
+
+<h3>5. Sending Push Messages from the Server</h3>
+<p>When you have something to notify the user about (for example, a new message or an update), your server can send a push message using the saved subscription. This involves making a web push request to the subscription’s endpoint (the browser’s push service). Rather than manually constructing HTTP requests (including required encryption headers), developers usually use a server library. One popular option is the <a href="https://www.npmjs.com/package/web-push">web-push</a> Node.js library:</p>
+<pre><code class="language-javascript">const webPush = require('web-push');
+// VAPID keys (public and private) should be generated once and reused
+webPush.setVapidDetails(
+  'mailto:your-email@domain.com',
+  process.env.VAPID_PUBLIC_KEY,
+  process.env.VAPID_PRIVATE_KEY
+);
+// Send a push notification to the client
+webPush.sendNotification(pushSubscription, JSON.stringify({
+  title: 'Hello!',
+  text: 'You have a new notification.'
+})).catch(err => {
+  console.error('Error sending notification:', err);
+});</code></pre>
+<p>In the above example, the server sets up its VAPID credentials (including a contact email and the VAPID keys). Then <code>sendNotification</code> is called with the subscription object and a payload. The payload here is a JSON string that the client will use to display the notification. The web-push library handles the low-level details of the Web Push Protocol: it encrypts the payload, adds the necessary headers (like TTL, content encoding, etc.), and sends the request to the correct push service (based on the subscription’s endpoint URL).</p>
+
+<h3>6. Receiving the Push in the Service Worker</h3>
+<p>When the push service delivers the message, the browser will wake up your service worker and fire a <code>push</code> event. You can listen for this in your <code>sw.js</code> (service worker script) and then use the Notifications API to show the message to the user:</p>
+<pre><code class="language-javascript">self.addEventListener('push', event => {
+  if (event.data) {
+    const data = event.data.json();
+    console.log('Push event received with data:', data);
+    self.registration.showNotification(data.title, {
+      body: data.text,
+      // you can add other options like icon, image, badge, etc.
+    });
+  } else {
+    console.log('Push event received with no data.');
+    self.registration.showNotification('New Notification', {
+      body: 'You have a new message.',
+    });
+  }
+});</code></pre>
+<p>Here, <code>event.data</code> is a <a href="https://developer.mozilla.org/en-US/docs/Web/API/PushMessageData">PushMessageData</a> object. We call <code>event.data.json()</code> assuming the server sent a JSON-formatted payload. Then we use <code>self.registration.showNotification()</code> to display a notification with the title and body from the data. If no payload was sent (i.e. <code>event.data</code> is empty), you can still show a generic notification as in the example above. Using the service worker to display notifications ensures they appear even if the user isn’t currently on your site or has it open in a tab.</p>
+
+<h3>7. Handling Notification Clicks</h3>
+<p>It’s important to handle user interactions with notifications. For example, if a user clicks a notification, you may want to open a specific page or bring an existing tab into focus. In the service worker, you can listen for the <code>notificationclick</code> event and respond accordingly:</p>
+<pre><code class="language-javascript">self.addEventListener('notificationclick', event => {
+  event.notification.close(); // Close the notification popup
+  const urlToOpen = '/dashboard';
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
+      // Check if there's already a window open with this URL
+      for (const client of windowClients) {
+        if (client.url.includes(urlToOpen) && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      // If not, open a new window
+      if (clients.openWindow) {
+        return clients.openWindow(urlToOpen);
+      }
+    })
+  );
+});</code></pre>
+<p>In this example, when the notification is clicked, we first close it (so it’s removed from the notification tray). Then we define a URL to open (perhaps your app’s dashboard or relevant content). We use <code>clients.matchAll</code> to find any browser tab that is already open to that URL; if found, we focus it. If no such tab exists, we open a new one with <code>clients.openWindow</code>. This way, clicking the notification takes the user to the appropriate place in your web app.</p>
+
+<h2>Best Practices and Considerations</h2>
+<ul>
+  <li><strong>Only prompt for permission in context:</strong> Avoid asking for notification permission on page load. Instead, explain the benefits and request permission after a user action, when the intent is clear. Modern browsers may block unsolicited permission prompts.</li>
+  <li><strong>Respect the user’s choice:</strong> If the user denies permission, do not repeatedly prompt them. Provide an easy way (such as a settings or profile page option) for them to enable notifications later if they choose.</li>
+  <li><strong>Use notifications wisely:</strong> Send notifications that are valuable to the user. Too many irrelevant notifications can lead users to ignore or disable them. Make sure each notification has meaningful content (e.g. a real update, alert, or personal message).</li>
+  <li><strong>Manage subscriptions:</strong> Implement logic on the server to handle expired or unsubscribed endpoints. Push services will respond with an error if a subscription is no longer valid (for example, if the user unsubscribed or uninstalled the app); your server should catch this and remove such subscriptions from your database.</li>
+  <li><strong>Cross-platform testing:</strong> Test your push notifications on all browsers and devices you intend to support. Note that on Safari for iOS, web push notifications require the user to add your site to their Home Screen (as an installed web app) before they can subscribe to push <a href="https://webkit.org/blog/14078/web-push-for-web-apps-on-ios-and-ipados/">[Apple Developer]</a>. Ensure the user experience is smooth across desktop and mobile.</li>
+</ul>
+
+<h2>Conclusion</h2>
+<p>Web push notifications enable web applications to engage users with real-time updates and information, providing an experience similar to native app notifications. By combining the Notifications API, Push API, and service workers, you can deliver messages to users even when your web app isn’t open – as long as they’ve opted in. Implementing push requires effort both in the browser (for subscribing users) and on the server (for sending messages), but the payoff is increased user engagement and the ability to proactively reach out to your audience. As of 2025, this technology is mature and supported across modern browsers, making it an essential tool for web developers looking to build robust, re-engageable web apps.</p>
+
+<h3>Further Reading</h3>
+<ul>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Push_API">MDN: Push API documentation</a></li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/API/Notifications_API">MDN: Notifications API documentation</a></li>
+  <li><a href="https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Tutorials/js13kGames/Re-engageable_Notifications_Push">MDN Tutorial: Using Push and Notifications in a PWA</a></li>
+  <li><a href="https://web.dev/use-push-notifications-to-engage-users/">web.dev Guide: Using Push Notifications to Engage Users</a></li>
+  <li><a href="https://www.npmjs.com/package/web-push">Web Push (Node.js) library on npm</a></li>
+</ul>
